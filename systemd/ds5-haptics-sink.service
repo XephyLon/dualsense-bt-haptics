@@ -1,0 +1,13 @@
+[Unit]
+Description=DualSense Haptics (BT) PipeWire sink
+After=pipewire.service wireplumber.service
+Requires=pipewire.service
+
+[Service]
+ExecStart=%h/.local/bin/ds5-haptics-sink
+Restart=on-failure
+RestartSec=2
+Nice=-10
+
+[Install]
+WantedBy=default.target
