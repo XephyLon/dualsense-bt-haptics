@@ -77,6 +77,9 @@ struct data {
 	int ticks;
 	int buffer_len;             /* controller-side buffer length byte (default 48) */
 	int double_frames;          /* always send two blocks per report */
+	int lead;                   /* silent reports pushed back-to-back when (re)starting a stream */
+	int primed;                 /* lead already sent for the current burst of audio */
+	int last_fd;
 	float gain;
 	int lpf;                    /* -1 leave alone, 0 off, 1 on */
 	int power_reduction;        /* -1 leave alone, 0..7 */
@@ -184,6 +187,11 @@ static void send_haptics(struct data *d, const int8_t *pcm, int frames)
 static void emit_ready_blocks(struct data *d)
 {
 	int need = d->double_frames ? 2 * FRAME_SAMPLES : FRAME_SAMPLES;
+	int fd = atomic_load(&d->fd);
+	if (fd != d->last_fd) {          /* new controller connection: prime again */
+		d->last_fd = fd;
+		d->primed = 0;
+	}
 	while (d->ring_len >= need) {
 		int frames = d->ring_len >= 2 * FRAME_SAMPLES ? 2 * FRAME_SAMPLES : FRAME_SAMPLES;
 		int silent = 1;
@@ -193,10 +201,21 @@ static void emit_ready_blocks(struct data *d)
 		d->silent_blocks = silent ? d->silent_blocks + frames / FRAME_SAMPLES : 0;
 		if (!silent)
 			d->nonsilent_blocks += frames / FRAME_SAMPLES;
-		if (d->silent_blocks > IDLE_BLOCKS)
+		if (d->silent_blocks > IDLE_BLOCKS) {
 			d->idle_skips++;
-		else
+			d->primed = 0;           /* next burst of audio gets primed again */
+		} else {
+			if (!d->primed) {
+				/* Push `lead` silent reports at once so the controller buffer runs
+				 * ahead of real time: lead x 10.7 ms of latency buys the same
+				 * tolerance against Bluetooth stalls. */
+				static const int8_t zero[2 * FRAME_BYTES] = {0};
+				for (int i = 0; i < d->lead; i++)
+					send_haptics(d, zero, need);
+				d->primed = 1;
+			}
 			send_haptics(d, d->ring, frames);
+		}
 		d->ring_len -= frames;
 		memmove(d->ring, d->ring + frames * 2, (size_t)d->ring_len * 2);
 	}
@@ -406,8 +425,9 @@ static void usage(void)
 	fprintf(stderr,
 		"usage: ds5-haptics-sink [--gain F] [--lpf on|off] [--power-reduction 0-7]\n"
 		"                        [--device /dev/hidrawN] [--mirror NODE]\n"
-		"                        [--buffer 16-127] [--double] [--verbose] [--stats-interval SEC]\n"
+		"                        [--buffer 16-127] [--lead 0-8] [--double] [--verbose] [--stats-interval SEC]\n"
 		"--buffer N   controller-side buffer length byte (default 48; larger = more slack, more latency)\n"
+		"--lead N     prime each burst with N silent reports (N x 10.7 ms latency = N x 10.7 ms stall tolerance)\n"
 		"--double     two 32-frame blocks per report (21.3 ms cadence, half the packet rate)\n"
 		"PipeWire sink \"DualSense Haptics (BT)\": audio routed to it plays on the\n"
 		"controller's haptic actuators over Bluetooth. DS5_HAPTICS_GAIN env sets gain.\n"
@@ -417,8 +437,8 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
-	struct data d = { .fd = -1, .gain = 1.0f, .lpf = -1, .power_reduction = -1, .stats_interval = 60,
-			  .buffer_len = 48 };
+	struct data d = { .fd = -1, .last_fd = -1, .gain = 1.0f, .lpf = -1, .power_reduction = -1,
+			  .stats_interval = 60, .buffer_len = 48 };
 	const char *env_gain = getenv("DS5_HAPTICS_GAIN");
 	if (env_gain)
 		d.gain = strtof(env_gain, NULL);
@@ -430,6 +450,7 @@ int main(int argc, char **argv)
 		{ "device", required_argument, 0, 'd' },
 		{ "mirror", required_argument, 0, 'm' },
 		{ "buffer", required_argument, 0, 'b' },
+		{ "lead", required_argument, 0, 'L' },
 		{ "double", no_argument, 0, '2' },
 		{ "verbose", no_argument, 0, 'v' },
 		{ "stats-interval", required_argument, 0, 's' },
@@ -437,9 +458,10 @@ int main(int argc, char **argv)
 		{ 0, 0, 0, 0 },
 	};
 	int c;
-	while ((c = getopt_long(argc, argv, "g:l:p:d:m:b:2vs:h", opts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "g:l:p:d:m:b:L:2vs:h", opts, NULL)) != -1) {
 		switch (c) {
 		case 'b': d.buffer_len = atoi(optarg); if (d.buffer_len < 16 || d.buffer_len > 127) { fprintf(stderr, "ds5-haptics-sink: --buffer 16..127\n"); return 2; } break;
+		case 'L': d.lead = atoi(optarg); if (d.lead < 0 || d.lead > 8) { fprintf(stderr, "ds5-haptics-sink: --lead 0..8\n"); return 2; } break;
 		case '2': d.double_frames = 1; break;
 		case 'g': d.gain = strtof(optarg, NULL); break;
 		case 'l': d.lpf = strcmp(optarg, "on") == 0; break;
