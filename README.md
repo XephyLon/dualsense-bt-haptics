@@ -10,6 +10,12 @@ Two tools:
 | `ds5bt` (Python) | Test and diagnostics CLI: tones, sweeps, WAV files, raw stdin → controller. Prints pacing stats. |
 | `ds5-haptics-sink` (C) | Native PipeWire sink **"DualSense Haptics (BT)"**. Anything routed to it plays on the actuators. Auto-reconnects when the controller drops. |
 
+Full protocol write-up (all report layouts, speaker/mic Opus path, 0x31
+fields, measurements, open questions, source commits):
+[`docs/research/2026-11-03-dualsense-bt-audio-protocol.md`](docs/research/2026-11-03-dualsense-bt-audio-protocol.md).
+Design spec and plan live under `docs/superpowers/`. `tools/make_test_wav.py`
+regenerates the hardware test clip.
+
 ## How it works
 
 The controller accepts raw haptic PCM in Bluetooth HID output report `0x32`:
