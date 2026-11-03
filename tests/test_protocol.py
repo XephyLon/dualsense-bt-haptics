@@ -96,3 +96,10 @@ def test_find_hidraw_bluetooth_only(tmp_path):
 
 def test_find_hidraw_empty(tmp_path):
     assert p.find_hidraw(str(tmp_path)) == []
+
+
+def test_haptics_report_buffer_len_byte_and_range():
+    rep = p.build_haptics_report(bytes(64), seq=0, counter=0, buffer_len=127)
+    assert rep[5] == 127 and rep[6] == 127
+    with pytest.raises(ValueError):
+        p.build_haptics_report(bytes(64), seq=0, counter=0, buffer_len=200)

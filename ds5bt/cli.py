@@ -50,7 +50,7 @@ def cmd_info(args) -> int:
 def _run(args, source) -> int:
     dev = _device(args)
     try:
-        st = HapticStreamer(dev, double=args.double)
+        st = HapticStreamer(dev, double=args.double, lead=args.lead, buffer_len=args.buffer)
     except PermissionError:
         sys.exit(f"ds5bt: {dev}: permission denied. Needs the udev uaccess rule for "
                  "054C:0DF2 / 054C:0CE6 hidraw nodes, or rw access to the device.")
@@ -60,8 +60,8 @@ def _run(args, source) -> int:
         os.write(st.fd, rep)
         st.seq = (st.seq + 1) & 0x0F
     rt = _try_realtime()
-    print(f"ds5bt: {dev}, {'double' if args.double else 'single'} frame reports, "
-          f"realtime {'on' if rt else 'off'}", file=sys.stderr)
+    print(f"ds5bt: {dev}, {'double' if args.double else 'single'} frame reports, lead {args.lead}, "
+          f"buffer {args.buffer}, realtime {'on' if rt else 'off'}", file=sys.stderr)
     try:
         st.run(source)
     except OSError as e:
@@ -77,6 +77,10 @@ def main(argv=None) -> int:
     ap.add_argument("--device", help="hidraw path (default: first Bluetooth DualSense)")
     ap.add_argument("--double", action="store_true", help="two blocks per report (21.3 ms cadence)")
     ap.add_argument("--gain", type=float, default=1.0)
+    ap.add_argument("--lead", type=int, default=0, metavar="N",
+                    help="prime the controller with N silent reports (N x 10.7 ms latency, N x 10.7 ms stall tolerance)")
+    ap.add_argument("--buffer", type=int, default=48, metavar="16-127",
+                    help="controller-side buffer length byte (default 48)")
     ap.add_argument("--lpf", choices=["on", "off"], help="set the controller's haptic low-pass filter first")
     ap.add_argument("--power-reduction", type=int, choices=range(8), metavar="0-7",
                     help="rumble motor power reduction, x12.5%% steps")

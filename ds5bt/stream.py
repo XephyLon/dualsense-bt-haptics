@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .protocol import FRAME_BYTES, FRAME_SAMPLES, RATE, build_haptics_report
+from .protocol import BUFFER_LENGTH, FRAME_BYTES, FRAME_SAMPLES, RATE, build_haptics_report
 
 PERIOD_NS = round(1e9 * FRAME_SAMPLES / RATE)       # 10 666 667 ns per 64-byte block
 SETTLE_REPORTS = 4                                  # silent reports sent at the end
@@ -30,16 +30,19 @@ class Stats:
 class HapticStreamer:
     """Sends report 0x32 once per block period. `source` yields 64-byte blocks."""
 
-    def __init__(self, path: str, double: bool = False, fd: int | None = None):
+    def __init__(self, path: str, double: bool = False, fd: int | None = None,
+                 lead: int = 0, buffer_len: int = BUFFER_LENGTH):
         self.path = path
         self.double = double
+        self.lead = lead                  # silent reports sent back-to-back before the first tick
+        self.buffer_len = buffer_len      # controller-side buffer length byte
         self.fd = fd if fd is not None else os.open(path, os.O_WRONLY | os.O_CLOEXEC)
         self.seq = 0
         self.counter = 0
         self.stats = Stats()
 
     def send_frames(self, frames: bytes) -> None:
-        report = build_haptics_report(frames, self.seq, self.counter)
+        report = build_haptics_report(frames, self.seq, self.counter, buffer_len=self.buffer_len)
         self.seq = (self.seq + 1) & 0x0F
         self.counter = (self.counter + len(frames) // FRAME_BYTES) & 0xFF
         t0 = time.perf_counter()
@@ -57,6 +60,12 @@ class HapticStreamer:
         start = time.monotonic()
         last_tick = None
         try:
+            # Priming: push `lead` silent reports at once so the controller's buffer runs
+            # fuller than real time. Costs lead x block period of latency, buys that much
+            # tolerance against Bluetooth stalls.
+            silence = bytes(FRAME_BYTES * per_report)
+            for _ in range(self.lead):
+                self.send_frames(silence)
             os.timerfd_settime_ns(tfd, initial=1, interval=PERIOD_NS * per_report)
             while True:
                 expirations = int.from_bytes(os.read(tfd, 8), "little")
@@ -75,7 +84,6 @@ class HapticStreamer:
                 if not chunks:
                     break
                 self.send_frames(b"".join(chunks))
-            silence = bytes(FRAME_BYTES * per_report)
             for _ in range(SETTLE_REPORTS):
                 os.read(tfd, 8)
                 self.send_frames(silence)

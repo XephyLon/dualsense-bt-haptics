@@ -39,10 +39,13 @@ def _finish(report: bytearray) -> bytes:
     return bytes(report)
 
 
-def build_haptics_report(frames: bytes, seq: int, counter: int, mic: bool = False) -> bytes:
+def build_haptics_report(frames: bytes, seq: int, counter: int, mic: bool = False,
+                         buffer_len: int = BUFFER_LENGTH) -> bytes:
     """Build report 0x32 holding one (64 B) or two (128 B) int8 stereo blocks."""
     if len(frames) not in (FRAME_BYTES, 2 * FRAME_BYTES):
         raise ValueError(f"frames must be {FRAME_BYTES} or {2 * FRAME_BYTES} bytes, got {len(frames)}")
+    if not 16 <= buffer_len <= 127:
+        raise ValueError("buffer_len must be 16..127")
     double = len(frames) == 2 * FRAME_BYTES
     r = bytearray(REPORT_HAPTICS_SIZE)
     r[0] = REPORT_HAPTICS
@@ -50,8 +53,8 @@ def build_haptics_report(frames: bytes, seq: int, counter: int, mic: bool = Fals
     r[2] = 0x11 | 0x80                       # sub-packet 0x11: audio control, sized
     r[3] = 4                                 # number of set bits in r[4]
     r[4] = 0x66 | (0x01 if mic else 0x00)    # bit5 buffer-length valid, bit6 mandatory, bit0 mic
-    r[5] = BUFFER_LENGTH
-    r[6] = BUFFER_LENGTH
+    r[5] = buffer_len
+    r[6] = buffer_len
     r[7] = counter & 0xFF
     r[8] = 0x12 | (0x40 if double else 0x00) | 0x80   # sub-packet 0x12: haptic PCM
     r[9] = FRAME_BYTES

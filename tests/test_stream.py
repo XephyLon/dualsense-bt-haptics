@@ -78,3 +78,18 @@ def test_summary_mentions_counts():
     st = HapticStreamer("fake", fd=os.open(os.devnull, os.O_WRONLY))
     st.stats.sent = 10
     assert "10" in st.stats.summary()
+
+
+def test_lead_sends_silent_reports_before_data_and_sets_buffer_byte():
+    r, w = os.pipe()
+    os.set_blocking(r, False)
+    st = HapticStreamer("fake", fd=w, lead=2, buffer_len=96)
+    st.run(blocks_source([bytes([7]) * 64]))
+    data = read_all(r)
+    os.close(r)
+    reports = [data[i:i + 142] for i in range(0, len(data), 142)]
+    assert len(reports) == 2 + 1 + 4
+    assert reports[0][10:74] == bytes(64) and reports[1][10:74] == bytes(64)
+    assert reports[2][10:74] == bytes([7]) * 64
+    assert all(rep[5] == 96 and rep[6] == 96 for rep in reports)
+    assert [rep[7] for rep in reports[:3]] == [0, 1, 2]
