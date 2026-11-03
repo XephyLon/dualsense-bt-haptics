@@ -71,6 +71,9 @@ struct data {
 	atomic_int fd;              /* hidraw fd, -1 when disconnected */
 	atomic_int write_failed;    /* set by RT thread, handled by main loop */
 	char dev_override[256];
+	char mirror[256];           /* node whose monitor ports we link into ourselves */
+	int mirror_linked;
+	int ticks;
 	float gain;
 	int lpf;                    /* -1 leave alone, 0 off, 1 on */
 	int power_reduction;        /* -1 leave alone, 0..7 */
@@ -83,8 +86,10 @@ struct data {
 	int silent_blocks;
 	uint8_t seq, counter;
 
-	long sent, idle_skips, errors, process_calls, dropped;
+	long sent, idle_skips, errors, process_calls, dropped, nonsilent_blocks;
 	long max_write_us;
+	float peak_in;              /* max |sample| seen at the input since last stats */
+	int stats_interval;         /* seconds between stats lines with --verbose */
 	time_t last_stats;
 };
 
@@ -179,6 +184,8 @@ static void emit_ready_blocks(struct data *d)
 			if (d->ring[i] != 0)
 				silent = 0;
 		d->silent_blocks = silent ? d->silent_blocks + frames / FRAME_SAMPLES : 0;
+		if (!silent)
+			d->nonsilent_blocks += frames / FRAME_SAMPLES;
 		if (d->silent_blocks > IDLE_BLOCKS)
 			d->idle_skips++;
 		else
@@ -208,6 +215,9 @@ static void on_process(void *userdata)
 		float g = d->gain * 127.0f;
 		d->process_calls++;
 		for (uint32_t i = 0; i < n; i++) {
+			float al = fabsf(in[2 * i]), ar = fabsf(in[2 * i + 1]);
+			if (al > d->peak_in) d->peak_in = al;
+			if (ar > d->peak_in) d->peak_in = ar;
 			float l = biquad_run(&d->lp[0][1], biquad_run(&d->lp[0][0], in[2 * i]));
 			float r = biquad_run(&d->lp[1][1], biquad_run(&d->lp[1][0], in[2 * i + 1]));
 			if (++d->decim_phase == DECIM) {
@@ -264,9 +274,44 @@ static int find_hidraw(char *out, size_t n)
 
 static void print_stats(struct data *d)
 {
-	fprintf(stderr, "ds5-haptics-sink: sent %ld, idle-skipped %ld, dropped %ld, errors %ld, "
-		"process calls %ld, max write %ld us\n",
-		d->sent, d->idle_skips, d->dropped, d->errors, d->process_calls, d->max_write_us);
+	fprintf(stderr, "ds5-haptics-sink: sent %ld, non-silent blocks %ld, idle-skipped %ld, dropped %ld, "
+		"errors %ld, process calls %ld, max write %ld us, input peak %.3f\n",
+		d->sent, d->nonsilent_blocks, d->idle_skips, d->dropped, d->errors, d->process_calls,
+		d->max_write_us, (double)d->peak_in);
+	d->peak_in = 0.0f;
+}
+
+/* Link one port pair with pw-link. 0 = linked (or already linked), -1 = not yet. */
+static int run_pw_link(const char *src, const char *dst)
+{
+	char cmd[700], out[256] = {0};
+	snprintf(cmd, sizeof(cmd), "pw-link '%s' '%s' 2>&1", src, dst);
+	FILE *p = popen(cmd, "r");
+	if (!p)
+		return -1;
+	if (!fgets(out, sizeof(out), p))
+		out[0] = 0;
+	int rc = pclose(p);
+	if (rc == 0 || strstr(out, "exists"))
+		return 0;
+	return -1;
+}
+
+/* --mirror NODE: feed NODE's monitor into this sink so everything it plays is felt too. */
+static void try_link_mirror(struct data *d)
+{
+	static const char *chans[] = { "FL", "FR" };
+	char src[320], dst[64];
+	int ok = 1;
+	for (size_t i = 0; i < 2; i++) {
+		snprintf(src, sizeof(src), "%s:monitor_%s", d->mirror, chans[i]);
+		snprintf(dst, sizeof(dst), "ds5_haptics:playback_%s", chans[i]);
+		if (run_pw_link(src, dst) != 0)
+			ok = 0;
+	}
+	if (ok && !d->mirror_linked)
+		fprintf(stderr, "ds5-haptics-sink: mirroring %s\n", d->mirror);
+	d->mirror_linked = ok;
 }
 
 /* Runs on the main loop once per second: handles disconnects and reconnects. */
@@ -274,6 +319,11 @@ static void on_timer(void *userdata, uint64_t expirations)
 {
 	struct data *d = userdata;
 	(void)expirations;
+	d->ticks++;
+
+	/* (re)establish the mirror links: quickly until linked, then every 10 s */
+	if (d->mirror[0] && (!d->mirror_linked || d->ticks % 10 == 0))
+		try_link_mirror(d);
 
 	if (atomic_load(&d->write_failed)) {
 		int fd = atomic_exchange(&d->fd, -1);
@@ -302,7 +352,7 @@ static void on_timer(void *userdata, uint64_t expirations)
 stats:
 	if (d->verbose) {
 		time_t now = time(NULL);
-		if (now - d->last_stats >= 60) {
+		if (now - d->last_stats >= d->stats_interval) {
 			d->last_stats = now;
 			print_stats(d);
 		}
@@ -320,14 +370,17 @@ static void usage(void)
 {
 	fprintf(stderr,
 		"usage: ds5-haptics-sink [--gain F] [--lpf on|off] [--power-reduction 0-7]\n"
-		"                        [--device /dev/hidrawN] [--verbose]\n"
+		"                        [--device /dev/hidrawN] [--mirror NODE]\n"
+		"                        [--verbose] [--stats-interval SEC]\n"
 		"PipeWire sink \"DualSense Haptics (BT)\": audio routed to it plays on the\n"
-		"controller's haptic actuators over Bluetooth. DS5_HAPTICS_GAIN env sets gain.\n");
+		"controller's haptic actuators over Bluetooth. DS5_HAPTICS_GAIN env sets gain.\n"
+		"--mirror NODE links NODE's monitor ports into this sink (e.g. your headset\n"
+		"sink or easyeffects_sink), so everything you hear is also felt.\n");
 }
 
 int main(int argc, char **argv)
 {
-	struct data d = { .fd = -1, .gain = 1.0f, .lpf = -1, .power_reduction = -1 };
+	struct data d = { .fd = -1, .gain = 1.0f, .lpf = -1, .power_reduction = -1, .stats_interval = 60 };
 	const char *env_gain = getenv("DS5_HAPTICS_GAIN");
 	if (env_gain)
 		d.gain = strtof(env_gain, NULL);
@@ -337,18 +390,25 @@ int main(int argc, char **argv)
 		{ "lpf", required_argument, 0, 'l' },
 		{ "power-reduction", required_argument, 0, 'p' },
 		{ "device", required_argument, 0, 'd' },
+		{ "mirror", required_argument, 0, 'm' },
 		{ "verbose", no_argument, 0, 'v' },
+		{ "stats-interval", required_argument, 0, 's' },
 		{ "help", no_argument, 0, 'h' },
 		{ 0, 0, 0, 0 },
 	};
 	int c;
-	while ((c = getopt_long(argc, argv, "g:l:p:d:vh", opts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "g:l:p:d:m:vs:h", opts, NULL)) != -1) {
 		switch (c) {
 		case 'g': d.gain = strtof(optarg, NULL); break;
 		case 'l': d.lpf = strcmp(optarg, "on") == 0; break;
 		case 'p': d.power_reduction = atoi(optarg) & 7; break;
 		case 'd': snprintf(d.dev_override, sizeof(d.dev_override), "%s", optarg); break;
+		case 'm':
+			if (strchr(optarg, '\'')) { fprintf(stderr, "ds5-haptics-sink: bad --mirror name\n"); return 2; }
+			snprintf(d.mirror, sizeof(d.mirror), "%s", optarg);
+			break;
 		case 'v': d.verbose = 1; break;
+		case 's': d.stats_interval = atoi(optarg) > 0 ? atoi(optarg) : 60; break;
 		default: usage(); return c == 'h' ? 0 : 2;
 		}
 	}

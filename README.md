@@ -67,9 +67,22 @@ Then:
 ```bash
 pw-play --target ds5_haptics file.wav                    # play straight to the controller
 pactl move-sink-input <id> ds5_haptics                   # route one app
-pw-loopback -n ds5_mirror -C "$(pactl get-default-sink)" -P ds5_haptics
-                                                         # mirror everything you hear
+./sink/ds5-haptics-sink --mirror easyeffects_sink        # feel everything that sink plays
 ```
+
+`--mirror NODE` links NODE's monitor ports (`NODE:monitor_FL/FR`) into the
+haptics sink with `pw-link`, retrying until NODE exists and re-checking every
+10 s. Pick the node your apps actually play into: `pw-link -l | grep playback`
+shows it. With EasyEffects that is `easyeffects_sink`, not the hardware sink.
+Manual equivalent:
+
+```bash
+pw-link easyeffects_sink:monitor_FL ds5_haptics:playback_FL
+pw-link easyeffects_sink:monitor_FR ds5_haptics:playback_FR
+```
+
+Do **not** use `pw-loopback -C <sink>` for this: its capture stream lands on
+the default *source* (microphone), not the sink's monitor.
 
 The sink idles (stops sending) after ~0.5 s of silence and resumes on signal.
 If the controller powers off it keeps the node alive and reconnects when the
