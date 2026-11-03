@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+sink/ds5-haptics-sink
+*.egg-info/
+build/
+dist/

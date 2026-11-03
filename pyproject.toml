@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ds5bt"
+version = "0.1.0"
+description = "DualSense haptics over Bluetooth: protocol library and test tool"
+requires-python = ">=3.13"
+dependencies = ["numpy", "scipy"]
+
+[project.scripts]
+ds5bt = "ds5bt.cli:main"
+
+[tool.setuptools]
+packages = ["ds5bt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
