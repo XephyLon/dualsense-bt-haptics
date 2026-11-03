@@ -84,9 +84,17 @@ pw-link easyeffects_sink:monitor_FR ds5_haptics:playback_FR
 Do **not** use `pw-loopback -C <sink>` for this: its capture stream lands on
 the default *source* (microphone), not the sink's monitor.
 
+Other options: `--gain F` (or `DS5_HAPTICS_GAIN`), `--buffer 16-127`
+(controller-side buffer length byte, default 48: more slack against Bluetooth
+hiccups at the cost of latency), `--double` (two blocks per report, 21.3 ms
+cadence, half the packet rate), `--lpf on|off`, `--power-reduction 0-7`,
+`--verbose --stats-interval SEC` (prints sent / non-silent / idle / errors /
+max process gap / input peak).
+
 The sink idles (stops sending) after ~0.5 s of silence and resumes on signal.
-If the controller powers off it keeps the node alive and reconnects when the
-controller comes back.
+If the controller powers off, the sink notices within a second (the hidraw
+class device disappears), keeps the PipeWire node alive, and reopens the new
+hidraw node when the controller comes back.
 
 ## Tested
 
@@ -99,8 +107,10 @@ Bluetooth, Steam running in the background.
 | `ds5bt tone 80 --ch left/right` | Felt, correct grip, clean separation |
 | `ds5bt sweep 40 400` | Felt, pitch rises, no stutter |
 | `pw-play --target ds5_haptics` through the sink | Felt L / R / both pattern as authored |
+| `--mirror easyeffects_sink` while playing to the headset | Felt in sync with the headset |
+| Power controller off / on while the sink runs | Sink reopened the new hidraw node, playback resumed |
 | Pacing | 0 late ticks, hidraw write 6–28 µs, cadence 10.68 ms |
-| Sink process rate | 94 callbacks/s (512/48000), 330 reports for a 3 s clip + 0.5 s idle tail |
+| Sink process rate | 94 callbacks/s (512/48000), max process gap 10.69 ms, 358 reports for a 3 s clip + 0.5 s idle tail |
 
 ## Limitations
 

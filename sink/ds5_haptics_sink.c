@@ -71,9 +71,12 @@ struct data {
 	atomic_int fd;              /* hidraw fd, -1 when disconnected */
 	atomic_int write_failed;    /* set by RT thread, handled by main loop */
 	char dev_override[256];
+	char dev_path[256];         /* the /dev/hidrawN we currently have open */
 	char mirror[256];           /* node whose monitor ports we link into ourselves */
 	int mirror_linked;
 	int ticks;
+	int buffer_len;             /* controller-side buffer length byte (default 48) */
+	int double_frames;          /* always send two blocks per report */
 	float gain;
 	int lpf;                    /* -1 leave alone, 0 off, 1 on */
 	int power_reduction;        /* -1 leave alone, 0..7 */
@@ -88,6 +91,9 @@ struct data {
 
 	long sent, idle_skips, errors, process_calls, dropped, nonsilent_blocks;
 	long max_write_us;
+	long max_gap_us;            /* longest interval between process callbacks while streaming */
+	long odd_sizes;             /* callbacks whose buffer was not 512 frames */
+	struct timespec last_process;
 	float peak_in;              /* max |sample| seen at the input since last stats */
 	int stats_interval;         /* seconds between stats lines with --verbose */
 	time_t last_stats;
@@ -119,8 +125,8 @@ static void build_haptics_report(struct data *d, uint8_t out[REPORT_SIZE], const
 	out[2] = 0x91;            /* sub-packet 0x11, sized */
 	out[3] = 4;               /* popcount of out[4] */
 	out[4] = 0x66;            /* buffer-length valid, mandatory bit, mic off */
-	out[5] = 48;
-	out[6] = 48;
+	out[5] = (uint8_t)d->buffer_len;
+	out[6] = (uint8_t)d->buffer_len;
 	out[7] = d->counter;
 	out[8] = dbl ? 0xD2 : 0x92;   /* sub-packet 0x12, bit6 = two frames */
 	out[9] = FRAME_BYTES;
@@ -177,7 +183,8 @@ static void send_haptics(struct data *d, const int8_t *pcm, int frames)
 /* Drain whole blocks from the ring: two per report when available, else one. */
 static void emit_ready_blocks(struct data *d)
 {
-	while (d->ring_len >= FRAME_SAMPLES) {
+	int need = d->double_frames ? 2 * FRAME_SAMPLES : FRAME_SAMPLES;
+	while (d->ring_len >= need) {
 		int frames = d->ring_len >= 2 * FRAME_SAMPLES ? 2 * FRAME_SAMPLES : FRAME_SAMPLES;
 		int silent = 1;
 		for (int i = 0; i < frames * 2 && silent; i++)
@@ -213,6 +220,17 @@ static void on_process(void *userdata)
 	if (in) {
 		uint32_t n = buf->datas[0].chunk->size / (sizeof(float) * 2);
 		float g = d->gain * 127.0f;
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		if (d->process_calls > 0) {
+			long gap = (now.tv_sec - d->last_process.tv_sec) * 1000000L +
+				   (now.tv_nsec - d->last_process.tv_nsec) / 1000;
+			if (gap > d->max_gap_us && !(d->silent_blocks > IDLE_BLOCKS))
+				d->max_gap_us = gap;
+		}
+		d->last_process = now;
+		if (n != 512)
+			d->odd_sizes++;
 		d->process_calls++;
 		for (uint32_t i = 0; i < n; i++) {
 			float al = fabsf(in[2 * i]), ar = fabsf(in[2 * i + 1]);
@@ -275,10 +293,12 @@ static int find_hidraw(char *out, size_t n)
 static void print_stats(struct data *d)
 {
 	fprintf(stderr, "ds5-haptics-sink: sent %ld, non-silent blocks %ld, idle-skipped %ld, dropped %ld, "
-		"errors %ld, process calls %ld, max write %ld us, input peak %.3f\n",
+		"errors %ld, process calls %ld (odd sizes %ld), max write %ld us, max process gap %ld us, "
+		"input peak %.3f\n",
 		d->sent, d->nonsilent_blocks, d->idle_skips, d->dropped, d->errors, d->process_calls,
-		d->max_write_us, (double)d->peak_in);
+		d->odd_sizes, d->max_write_us, d->max_gap_us, (double)d->peak_in);
 	d->peak_in = 0.0f;
+	d->max_gap_us = 0;
 }
 
 /* Link one port pair with pw-link. 0 = linked (or already linked), -1 = not yet. */
@@ -330,7 +350,21 @@ static void on_timer(void *userdata, uint64_t expirations)
 		if (fd >= 0)
 			close(fd);
 		atomic_store(&d->write_failed, 0);
+		d->dev_path[0] = 0;
 		fprintf(stderr, "ds5-haptics-sink: controller write failed, waiting for it to come back\n");
+	}
+	/* Proactive check: the hidraw class device vanishes the moment the controller drops,
+	 * even while idle. Catch it here instead of on the first failed write. */
+	if (atomic_load(&d->fd) >= 0 && d->dev_path[0]) {
+		char sys[320];
+		snprintf(sys, sizeof(sys), "/sys/class/hidraw/%s", strrchr(d->dev_path, '/') + 1);
+		if (access(sys, F_OK) != 0) {
+			int fd = atomic_exchange(&d->fd, -1);
+			if (fd >= 0)
+				close(fd);
+			fprintf(stderr, "ds5-haptics-sink: %s gone, waiting for the controller\n", d->dev_path);
+			d->dev_path[0] = 0;
+		}
 	}
 	if (atomic_load(&d->fd) < 0) {
 		char path[256];
@@ -346,6 +380,7 @@ static void on_timer(void *userdata, uint64_t expirations)
 		}
 		if (d->lpf >= 0 || d->power_reduction >= 0)
 			send_state_report(d, fd);
+		snprintf(d->dev_path, sizeof(d->dev_path), "%s", path);
 		atomic_store(&d->fd, fd);
 		fprintf(stderr, "ds5-haptics-sink: connected to %s\n", path);
 	}
@@ -371,7 +406,9 @@ static void usage(void)
 	fprintf(stderr,
 		"usage: ds5-haptics-sink [--gain F] [--lpf on|off] [--power-reduction 0-7]\n"
 		"                        [--device /dev/hidrawN] [--mirror NODE]\n"
-		"                        [--verbose] [--stats-interval SEC]\n"
+		"                        [--buffer 16-127] [--double] [--verbose] [--stats-interval SEC]\n"
+		"--buffer N   controller-side buffer length byte (default 48; larger = more slack, more latency)\n"
+		"--double     two 32-frame blocks per report (21.3 ms cadence, half the packet rate)\n"
 		"PipeWire sink \"DualSense Haptics (BT)\": audio routed to it plays on the\n"
 		"controller's haptic actuators over Bluetooth. DS5_HAPTICS_GAIN env sets gain.\n"
 		"--mirror NODE links NODE's monitor ports into this sink (e.g. your headset\n"
@@ -380,7 +417,8 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
-	struct data d = { .fd = -1, .gain = 1.0f, .lpf = -1, .power_reduction = -1, .stats_interval = 60 };
+	struct data d = { .fd = -1, .gain = 1.0f, .lpf = -1, .power_reduction = -1, .stats_interval = 60,
+			  .buffer_len = 48 };
 	const char *env_gain = getenv("DS5_HAPTICS_GAIN");
 	if (env_gain)
 		d.gain = strtof(env_gain, NULL);
@@ -391,14 +429,18 @@ int main(int argc, char **argv)
 		{ "power-reduction", required_argument, 0, 'p' },
 		{ "device", required_argument, 0, 'd' },
 		{ "mirror", required_argument, 0, 'm' },
+		{ "buffer", required_argument, 0, 'b' },
+		{ "double", no_argument, 0, '2' },
 		{ "verbose", no_argument, 0, 'v' },
 		{ "stats-interval", required_argument, 0, 's' },
 		{ "help", no_argument, 0, 'h' },
 		{ 0, 0, 0, 0 },
 	};
 	int c;
-	while ((c = getopt_long(argc, argv, "g:l:p:d:m:vs:h", opts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "g:l:p:d:m:b:2vs:h", opts, NULL)) != -1) {
 		switch (c) {
+		case 'b': d.buffer_len = atoi(optarg); if (d.buffer_len < 16 || d.buffer_len > 127) { fprintf(stderr, "ds5-haptics-sink: --buffer 16..127\n"); return 2; } break;
+		case '2': d.double_frames = 1; break;
 		case 'g': d.gain = strtof(optarg, NULL); break;
 		case 'l': d.lpf = strcmp(optarg, "on") == 0; break;
 		case 'p': d.power_reduction = atoi(optarg) & 7; break;
