@@ -77,10 +77,11 @@ def main(argv=None) -> int:
     ap.add_argument("--device", help="hidraw path (default: first Bluetooth DualSense)")
     ap.add_argument("--double", action="store_true", help="two blocks per report (21.3 ms cadence)")
     ap.add_argument("--gain", type=float, default=1.0)
-    ap.add_argument("--lead", type=int, default=0, metavar="N",
-                    help="prime the controller with N silent reports (N x 10.7 ms latency, N x 10.7 ms stall tolerance)")
-    ap.add_argument("--buffer", type=int, default=48, metavar="16-127",
-                    help="controller-side buffer length byte (default 48)")
+    ap.add_argument("--lead", type=int, default=3, metavar="N",
+                    help="prime the controller with N silent reports: N x 10.7 ms latency buys N x 10.7 ms "
+                         "tolerance against Bluetooth stalls (default 3; 0 = lowest latency, audible dropouts)")
+    ap.add_argument("--buffer", type=int, default=127, metavar="16-127",
+                    help="controller-side buffer length byte (default 127; protocol default is 48)")
     ap.add_argument("--lpf", choices=["on", "off"], help="set the controller's haptic low-pass filter first")
     ap.add_argument("--power-reduction", type=int, choices=range(8), metavar="0-7",
                     help="rumble motor power reduction, x12.5%% steps")

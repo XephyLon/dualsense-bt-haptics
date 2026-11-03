@@ -43,9 +43,11 @@ python3 -m ds5bt wav track.wav              # L → left actuator, R → right
 ffmpeg -i x.mp3 -ac 2 -ar 3000 -f s8 - | python3 -m ds5bt stdin
 ```
 
-Options: `--gain F`, `--double` (two blocks per report, 21.3 ms cadence),
-`--lpf on|off` (controller's own haptic low-pass filter), `--power-reduction 0-7`,
-`--device /dev/hidrawN`. Every run ends with a stats line:
+Options: `--gain F`, `--lead N` / `--buffer N` (stall tolerance, see the sink
+section; defaults 3 / 127), `--double` (two blocks per report, 21.3 ms
+cadence), `--lpf on|off` (controller's own haptic low-pass filter),
+`--power-reduction 0-7`, `--device /dev/hidrawN`. Every run ends with a stats
+line:
 
 ```
 192 reports in 2.05 s, late ticks 0, write errors 0, max write 6 us, max gap 10.68 ms
@@ -84,12 +86,22 @@ pw-link easyeffects_sink:monitor_FR ds5_haptics:playback_FR
 Do **not** use `pw-loopback -C <sink>` for this: its capture stream lands on
 the default *source* (microphone), not the sink's monitor.
 
-Other options: `--gain F` (or `DS5_HAPTICS_GAIN`), `--buffer 16-127`
-(controller-side buffer length byte, default 48: more slack against Bluetooth
-hiccups at the cost of latency), `--double` (two blocks per report, 21.3 ms
-cadence, half the packet rate), `--lpf on|off`, `--power-reduction 0-7`,
-`--verbose --stats-interval SEC` (prints sent / non-silent / idle / errors /
-max process gap / input peak).
+Other options: `--gain F` (or `DS5_HAPTICS_GAIN`), `--lead 0-8` and
+`--buffer 16-127` (see *Stall tolerance* below), `--double` (two blocks per
+report, 21.3 ms cadence, half the packet rate), `--lpf on|off`,
+`--power-reduction 0-7`, `--verbose --stats-interval SEC` (prints sent /
+non-silent / idle / errors / max process gap / input peak).
+
+### Stall tolerance (`--lead`, `--buffer`)
+
+The controller plays from a tiny buffer. If the Bluetooth link stalls for
+longer than that buffer holds, you feel a dropout even though the host sent
+every report on time. Both tools therefore **prime** each burst of audio with
+`--lead N` silent reports sent back-to-back and ask for a larger buffer with
+`--buffer 127`, so the controller runs N blocks ahead of real time. Each block
+of lead costs 10.7 ms of latency and buys 10.7 ms of stall tolerance. Default
+is `--lead 3 --buffer 127` (+32 ms); `--lead 0 --buffer 48` is the raw
+protocol default and the lowest latency.
 
 The sink idles (stops sending) after ~0.5 s of silence and resumes on signal.
 If the controller powers off, the sink notices within a second (the hidraw
@@ -109,6 +121,8 @@ Bluetooth, Steam running in the background.
 | `pw-play --target ds5_haptics` through the sink | Felt L / R / both pattern as authored |
 | `--mirror easyeffects_sink` while playing to the headset | Felt in sync with the headset |
 | Power controller off / on while the sink runs | Sink reopened the new hidraw node, playback resumed |
+| 20 s steady 70 Hz tone, `--lead 0 --buffer 48` | Occasional brief dropouts (Bluetooth stalls), host pacing perfect |
+| 20 s steady 70 Hz tone, `--lead 3 --buffer 127` | No dropouts → made the default |
 | Pacing | 0 late ticks, hidraw write 6–28 µs, cadence 10.68 ms |
 | Sink process rate | 94 callbacks/s (512/48000), max process gap 10.69 ms, 358 reports for a 3 s clip + 0.5 s idle tail |
 

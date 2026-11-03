@@ -426,8 +426,9 @@ static void usage(void)
 		"usage: ds5-haptics-sink [--gain F] [--lpf on|off] [--power-reduction 0-7]\n"
 		"                        [--device /dev/hidrawN] [--mirror NODE]\n"
 		"                        [--buffer 16-127] [--lead 0-8] [--double] [--verbose] [--stats-interval SEC]\n"
-		"--buffer N   controller-side buffer length byte (default 48; larger = more slack, more latency)\n"
-		"--lead N     prime each burst with N silent reports (N x 10.7 ms latency = N x 10.7 ms stall tolerance)\n"
+		"--buffer N   controller-side buffer length byte (default 127; protocol default 48)\n"
+		"--lead N     prime each burst with N silent reports (default 3): N x 10.7 ms latency buys\n"
+		"             N x 10.7 ms tolerance against Bluetooth stalls; 0 = lowest latency, dropouts\n"
 		"--double     two 32-frame blocks per report (21.3 ms cadence, half the packet rate)\n"
 		"PipeWire sink \"DualSense Haptics (BT)\": audio routed to it plays on the\n"
 		"controller's haptic actuators over Bluetooth. DS5_HAPTICS_GAIN env sets gain.\n"
@@ -437,8 +438,11 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
+	/* lead 3 / buffer 127: measured on a DualSense Edge over a MediaTek adapter, the protocol
+	 * default (no lead, 48) gave occasional dropouts from Bluetooth stalls; 3 blocks of lead
+	 * (+32 ms latency) removed them. */
 	struct data d = { .fd = -1, .last_fd = -1, .gain = 1.0f, .lpf = -1, .power_reduction = -1,
-			  .stats_interval = 60, .buffer_len = 48 };
+			  .stats_interval = 60, .buffer_len = 127, .lead = 3 };
 	const char *env_gain = getenv("DS5_HAPTICS_GAIN");
 	if (env_gain)
 		d.gain = strtof(env_gain, NULL);
