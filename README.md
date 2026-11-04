@@ -129,8 +129,58 @@ Bluetooth, Steam running in the background.
 | Power controller off / on while the sink runs | Sink reopened the new hidraw node, playback resumed |
 | 20 s steady 70 Hz tone, `--lead 0 --buffer 48` | Occasional brief dropouts (Bluetooth stalls), host pacing perfect |
 | 20 s steady 70 Hz tone, `--lead 3 --buffer 127` | No dropouts → made the default |
+| ds5bridge + Cyberpunk 2077 (Proton Experimental 11.0, Steam Input off) | Textured HD haptics and adaptive triggers over Bluetooth; game streamed 4-ch audio at 46.9 packets/s, 0 underruns |
+| ds5bridge + Lies of P | Not a haptics title on PC (Xbox-style pad via Steam Input); rumble only |
 | Pacing | 0 late ticks, hidraw write 6–28 µs, cadence 10.68 ms |
 | Sink process rate | 94 callbacks/s (512/48000), max process gap 10.69 ms, 358 reports for a 3 s clip + 0.5 s idle tail |
+
+## Games with native DualSense support (ds5bridge)
+
+Native-haptics games (Cyberpunk 2077, Returnal, FF7R, FFXIV, Deathloop, …)
+do not look for a sink by name; under Proton they match the controller's
+HID device to its audio endpoint through the USB **ContainerId** (see
+`docs/research/2026-11-04-proton-dualsense-matching.md`). A Bluetooth pad
+has none. The fix is [ds5bridge](https://github.com/snooptheone/ds5bridge):
+a root daemon that presents the Bluetooth pad as a **virtual USB DualSense**
+through `vhci_hcd`, bridging input, output (adaptive triggers, LEDs),
+4-channel audio → haptics (`0x39`) and speaker (Opus). Verified here on a
+DualSense Edge with Cyberpunk 2077 on Proton Experimental: textured haptics
+and adaptive triggers over Bluetooth.
+
+Install (Arch, from upstream's PKGBUILD; `dist/` holds the package we built):
+
+```bash
+makepkg -f   # in a copy of ds5bridge/packaging/arch
+sudo pacman -U ds5bridge-0.1.0-1-x86_64.pkg.tar.zst
+systemctl --user restart wireplumber
+```
+
+Then, per game: Steam → Properties → Controller → **Disable Steam Input**.
+Reconnect the pad; `journalctl -u ds5bridge -f` shows it attach. The real
+pad's nodes become root-only, so phase-1's `ds5-haptics-sink` and `ds5bt`
+cannot run while ds5bridge is installed; use `tools/ds5-mirror.sh` instead
+(it links a node's monitor into the virtual pad's haptic channels).
+
+Settings we changed from the defaults, in
+`/etc/systemd/system/ds5bridge.service.d/override.conf`:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/ds5bridge --grace 15 --qos-latency 0 --idle-off 60
+```
+
+- `--grace 15`: keep the virtual pad (and its ContainerId) through
+  Bluetooth drops of up to 15 s instead of 3 s.
+- `--idle-off 60`: the default 15 min powered the pad off during setup.
+- `--qos-latency 0`: the HCI QoS request made no difference on the Edge
+  (it reports ~500–750 times/s on this MediaTek adapter either way).
+
+Things that look like a disconnect but are not: games may leave the light
+bar dark on exit. Check `bluetoothctl info` or the ds5bridge log before
+assuming a drop. Real drops log "Bluetooth pad gone".
+
+Rollback: `sudo pacman -R ds5bridge` (restores the real pad's permissions).
 
 ## Limitations
 
