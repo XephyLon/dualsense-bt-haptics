@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/header.png" alt="dualsense-bt-haptics" width="100%">
+</p>
+
 # DualSense haptics over Bluetooth (Linux)
 
 HD haptics ("voice-coil" rumble) on a Sony DualSense or DualSense Edge
