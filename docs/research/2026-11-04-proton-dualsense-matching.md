@@ -148,3 +148,39 @@ as far as its README knows:
   positionless 4-ch file was dropped by `channelmix.disable` and the pad
   received all zeros; Wine's 4-ch streams carry FL FR RL RR, so games are
   unaffected.
+
+### Game runs (2026-11-04)
+
+- **Lies of P** (Proton-CachyOS 11.0): no native DualSense support on PC; the
+  pad behaves as an Xbox pad through Steam Input. Rumble felt = Steam Input
+  rumble forwarded by ds5bridge. Not a haptics test.
+- **Cyberpunk 2077 2.x** (Proton Experimental 11.0, Steam Input disabled,
+  `PROTON_LOG=1`): adaptive triggers worked (user), and the game streamed
+  4-channel audio to the virtual pad: ds5bridge logged 35 two-second windows
+  with haptic signal on ch 3–4 (peaks up to 15008/32767), speaker audio on
+  ch 1–2, Bluetooth `0x39` stream at the ideal 46.9 packets/s with 0
+  underruns, >3000 output reports from the game. ContainerId matching through
+  the virtual USB device therefore works over Bluetooth on the Edge.
+  The game crashed after ~5 minutes with an access violation inside
+  `Cyberpunk2077.exe` (nothing from Wine's HID or audio layers in the
+  backtrace, last log lines are vkd3d-proton and netprofm); not attributed.
+
+### Controller drops
+
+Three Bluetooth drops in one afternoon, all with the pad initiating the
+disconnect (L2CAP disconnect requests for both HID channels, then HCI reason
+0x13 "Remote User Terminated Connection"):
+
+1. 13:42:24 — ds5bridge's `--idle-off 15`: "no activity for 900 s: powering
+   the pad off". Our last haptic test had been at 13:27. Raised to 60 min.
+2. 13:47:23 and 3. 14:26:24 — no idle message, no host→pad traffic for the
+   preceding 38 s (btmon), no host HCI command; both while a game was being
+   launched. Input reports were streaming at ~750/s the whole time (HCI QoS
+   Setup, 5 ms, applied by ds5bridge; the author measured ~300/s on a plain
+   DualSense with an Intel adapter). Hypothesis under test: the Edge at that
+   rate on the MediaTek adapter stalls under load and gives up. ds5bridge
+   now runs with `--qos-latency 0` (systemd drop-in
+   `/etc/systemd/system/ds5bridge.service.d/override.conf`, together with
+   `--grace 15 --idle-off 60`); QoS only clears on the next reconnect.
+   Drop 3 was absorbed by the 15 s grace: the virtual USB pad and its
+   ContainerId survived.
