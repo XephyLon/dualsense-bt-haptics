@@ -116,5 +116,35 @@ haptics: Cyberpunk 2077, FINAL FANTASY XIV, Lies of P, Monster Hunter Wilds.
 
 ds5bridge v0.1.0 built from source and its full test suite passed here
 (unit, golden packets, USB/IP protocol, lifecycle, multipad, route, tools,
-options, install, packaging, wireplumber). Hardware validation results are
-recorded in the README as they happen.
+options, install, packaging, wireplumber). Installed as a pacman package
+built from upstream `packaging/arch/PKGBUILD`.
+
+### Validation with the DualSense Edge (2026-11-04)
+
+First Edge (054C:0DF2) and first MediaTek MT7921 adapter run of ds5bridge,
+as far as its README knows:
+
+- Pad detected on connect (`/dev/hidraw15`, bus 0005), feature reports read
+  in 41 ms, virtual pad attached to `vhci_hcd` port 0, battery reported.
+- HCI QoS Setup accepted (status 0, 5000 µs); input rate 226 reports/s.
+- `lsusb`: `Bus 010 Device 002: ID 054c:0ce6 Sony Corp. DualSense wireless
+  controller (PS5)`. The Edge is presented as a plain DualSense (ds5bridge
+  ships 0ce6 descriptors); `hid-playstation` bound to it as
+  `0003:054C:0CE6`, hidraw16 with `uaccess` ACL for the user. The real pad's
+  hidraw15 and event22–24 became root-only.
+- PipeWire sink
+  `alsa_output.usb-Sony_Interactive_Entertainment_DualSense_Wireless_Controller-00.analog-surround-40`,
+  description/nick "Wireless Controller", S16LE 4 ch 48 kHz, FL FR RL RR,
+  `channelmix.disable=true`, profile `analog-surround-40` (UCM off). Pulse
+  properties include `sysfs.path =
+  /devices/platform/vhci_hcd.0/usb10/10-1/10-1:1.0/sound/card5`,
+  `device.bus=usb`, vendor/product 0x054c/0x0ce6; udev on `10-1` gives
+  `PRODUCT=54c/ce6/100 BUSNUM=010 DEVNUM=002 USEC_INITIALIZED=…`, so winebus
+  and winepulse derive the same ContainerId.
+- 4-channel test WAV (`tools/make_test_wav.py --4ch`) played with
+  `pw-play --channel-map FL,FR,RL,RR --target <sink>`: ds5bridge logged
+  haptics peak 29480/29480 on ch 3–4, speaker 0/0, and streamed `0x39`
+  packets. Without an explicit channel map pw-play's guessed layout for a
+  positionless 4-ch file was dropped by `channelmix.disable` and the pad
+  received all zeros; Wine's 4-ch streams carry FL FR RL RR, so games are
+  unaffected.
